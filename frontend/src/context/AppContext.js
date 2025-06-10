@@ -4,9 +4,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 import defaultBg from '../assets/backgrounds/default-bg.jpg';
 
 const AppContext = createContext(null);
-
-// This URL works for BOTH local development (with proxy) and Vercel deployment
-const API_URL = '/api';
+const API_URL = '/api'; // This relative URL works for both local and Vercel deployment
 
 export const AppProvider = ({ children }) => {
   const [pageBackground, setPageBackground] = useState(defaultBg);
@@ -15,6 +13,7 @@ export const AppProvider = ({ children }) => {
   const [orders, setOrders] = useState([]);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
 
+  // Fetch initial orders on app load
   useEffect(() => {
     const fetchOrders = async () => {
       try {
@@ -30,12 +29,68 @@ export const AppProvider = ({ children }) => {
     fetchOrders();
   }, []);
 
-  // All other functions (placeOrder, updateOrderStatus, etc.) remain the same
-  // as they already use the API_URL variable.
+  // Real-time listener for orders from other tabs
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'mamta_orders' && e.newValue) {
+        const newOrders = JSON.parse(e.newValue);
+        if (newOrders.length > orders.length) {
+          window.dispatchEvent(new Event('newOrder'));
+          toast.success("A new order has arrived!", { icon: '🔔' });
+        }
+        setOrders(newOrders);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, [orders.length]);
+
+  // Function to add items to the cart
+  const addToCart = useCallback((item, size, price) => {
+    setCart((prevCart) => {
+      const existingItemIndex = prevCart.findIndex(
+        (cartItem) => cartItem.name === item.name && cartItem.size === size
+      );
+      if (existingItemIndex > -1) {
+        const updatedCart = [...prevCart];
+        updatedCart[existingItemIndex].quantity += 1;
+        return updatedCart;
+      } else {
+        const newItem = {
+          id: `${item.name}-${size}-${Date.now()}`,
+          name: item.name,
+          size: size,
+          price: price,
+          quantity: 1,
+        };
+        return [...prevCart, newItem];
+      }
+    });
+    toast.success(`${item.name} (${size}) added to cart!`);
+  }, [setCart]);
+
+  const updateQuantity = useCallback((id, change) => {
+    setCart(
+      cart.map((item) =>
+        item.id === id ? { ...item, quantity: Math.max(0, item.quantity + change) } : item
+      ).filter((item) => item.quantity > 0)
+    );
+  }, [cart, setCart]);
+
+  const getTotalPrice = useCallback(() => {
+    return cart.reduce((total, item) => total + item.price * item.quantity, 0);
+  }, [cart]);
+
   const placeOrder = useCallback(async () => {
     if (cart.length === 0) return;
-    const getTotalPrice = () => cart.reduce((total, item) => total + (item.price * item.quantity), 0);
-    const newOrderPayload = { id: Date.now(), items: cart, total: getTotalPrice() };
+
+    const newOrderPayload = {
+      id: Date.now(),
+      items: cart,
+      total: getTotalPrice(),
+    };
 
     try {
       const response = await fetch(`${API_URL}/orders`, {
@@ -48,27 +103,54 @@ export const AppProvider = ({ children }) => {
         const errorData = await response.text();
         throw new Error(`Failed to place order. Server responded with: ${errorData}`);
       }
-      
-      const newOrderForState = { ...newOrderPayload, id: newOrderPayload.id.toString(), total_price: newOrderPayload.total, status: 'pending', created_at: new Date().toISOString() };
+
+      const newOrderForState = {
+        ...newOrderPayload,
+        id: newOrderPayload.id.toString(),
+        total_price: newOrderPayload.total,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+      };
+
       setOrders(prevOrders => [newOrderForState, ...prevOrders]);
       setCart([]);
       setCurrentView("orders");
       toast.success("Order placed successfully!");
+
     } catch (err) {
       console.error("Error in placeOrder:", err);
       toast.error("Failed to place order. Check console for details.");
     }
-  }, [cart, setCart, setCurrentView, setOrders]);
-  
-  // ...other functions...
+  }, [cart, getTotalPrice, setCart, setCurrentView, setOrders]);
+
+  const updateOrderStatus = useCallback(async (orderId, status) => {
+    try {
+        const response = await fetch(`${API_URL}/orders/${orderId}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+        if (!response.ok) {
+            throw new Error('Failed to update status');
+        }
+        setOrders(prevOrders =>
+            prevOrders.map(order =>
+                String(order.id) === String(orderId) ? { ...order, status } : order
+            )
+        );
+        toast.success(`Order status updated to ${status}.`);
+    } catch (err) {
+        console.error("Error in updateOrderStatus:", err);
+        toast.error("Failed to update order status.");
+    }
+  }, [setOrders]);
 
   const value = {
     pageBackground, setPageBackground,
     currentView, setCurrentView,
-    cart, setCart, // provide setCart now
-    orders, setOrders, // provide setOrders now
-    placeOrder,
-    //... all other functions and state...
+    cart, addToCart, updateQuantity, getTotalPrice, placeOrder,
+    orders, updateOrderStatus,
+    showMobileMenu, setShowMobileMenu,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
